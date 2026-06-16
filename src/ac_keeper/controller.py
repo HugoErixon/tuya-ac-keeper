@@ -36,7 +36,7 @@ class ThermostatController:
         self.store.insert_ac_status(status)
 
         decision = self.decide(readings, status)
-        self.apply(decision)
+        self.apply(decision, status)
         self.store.insert_control_event(decision)
 
         logger.info(
@@ -88,7 +88,7 @@ class ThermostatController:
             span = max(0.0, target - cfg.min_setpoint_c)
             band = cfg.ramp_band_c if cfg.ramp_band_c > 0 else 1.0
             frac = min(1.0, max(0.0, above) / band)
-            setpoint = round(target - frac * span, 1)
+            setpoint = float(round(target - frac * span))
             setpoint = min(target, max(cfg.min_setpoint_c, setpoint))
             requested_power = True
             requested_mode = modes.cool
@@ -123,15 +123,27 @@ class ThermostatController:
             requested_setpoint_c=requested_setpoint,
         )
 
-    def apply(self, decision: ControlDecision) -> None:
+    def apply(self, decision: ControlDecision, status: AcStatus | None = None) -> None:
         if decision.action.startswith("dry_run_") or decision.action in {"hold", "defer", "no_sensor_data"}:
             return
 
-        self.ac.apply(
-            power=decision.requested_power,
-            mode=decision.requested_mode,
-            setpoint_c=decision.requested_setpoint_c,
-        )
+        power = decision.requested_power
+        mode = decision.requested_mode
+        setpoint = decision.requested_setpoint_c
+
+        # Skicka bara DP:er som faktiskt ändras — annars piper AC:n vid varje cykel.
+        if status is not None:
+            if power is not None and power == status.power:
+                power = None
+            if mode is not None and mode == status.mode:
+                mode = None
+            if (setpoint is not None and status.target_temperature_c is not None
+                    and abs(setpoint - status.target_temperature_c) < 0.5):
+                setpoint = None
+            if power is None and mode is None and setpoint is None:
+                return  # inget har ändrats → skicka inget kommando (inget pip)
+
+        self.ac.apply(power=power, mode=mode, setpoint_c=setpoint)
         self._last_applied_at = datetime.now(timezone.utc)
 
     def run_forever(self) -> None:

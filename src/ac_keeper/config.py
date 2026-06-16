@@ -27,6 +27,8 @@ class ControllerConfig:
     aggregate: str = "average"
     heat_enabled: bool = False
     dry_run: bool = True
+    min_setpoint_c: float = 16.0
+    ramp_band_c: float = 2.0
 
 
 @dataclass(frozen=True)

@@ -67,35 +67,42 @@ class ThermostatController:
                 reason="No sensor readings were available.",
             )
 
-        target = self.config.controller.target_c
-        hysteresis = self.config.controller.hysteresis_c
+        cfg = self.config.controller
+        target = cfg.target_c
+        hysteresis = cfg.hysteresis_c
         modes = self.config.ac.modes
+        above = measured - target
 
-        requested_power: bool | None = None
-        requested_mode: str | None = None
-        requested_setpoint = target
-        action = "hold"
-        reason = "Measured temperature is inside the hysteresis band."
+        # På/av styrs HELT av Zigbee-mätningen (AC:ns egen givare används aldrig
+        # i beslutet), med hysteres för att undvika kort cykling.
+        if above > hysteresis:
+            want_cool = True
+        elif above < -hysteresis:
+            want_cool = False
+        else:
+            want_cool = bool(status.power)  # inom dödbandet: behåll nuvarande läge
 
-        if measured > target + hysteresis:
+        if want_cool:
+            # Proportionell AC-setpoint: full kyla (min_setpoint) när långt över målet,
+            # höj mjukt mot målet när rummet närmar sig → snabb start utan översläng.
+            span = max(0.0, target - cfg.min_setpoint_c)
+            band = cfg.ramp_band_c if cfg.ramp_band_c > 0 else 1.0
+            frac = min(1.0, max(0.0, above) / band)
+            setpoint = round(target - frac * span, 1)
+            setpoint = min(target, max(cfg.min_setpoint_c, setpoint))
             requested_power = True
             requested_mode = modes.cool
+            requested_setpoint = setpoint
             action = "cool"
-            reason = f"Measured {measured:.2f}C is above target {target:.2f}C + hysteresis {hysteresis:.2f}C."
-        elif measured < target - hysteresis:
-            if self.config.controller.heat_enabled:
-                requested_power = True
-                requested_mode = modes.heat
-                action = "heat"
-                reason = f"Measured {measured:.2f}C is below target {target:.2f}C - hysteresis {hysteresis:.2f}C."
-            else:
-                requested_power = False
-                requested_mode = None
-                requested_setpoint = None
-                action = "off"
-                reason = "Measured temperature is low and heat is disabled."
+            reason = f"Room {measured:.2f}C vs target {target:.1f}C -> cool, AC setpoint {setpoint:.1f}C."
+        else:
+            requested_power = False
+            requested_mode = None
+            requested_setpoint = None
+            action = "off"
+            reason = f"Room {measured:.2f}C at/below target {target:.1f}C -> AC off."
 
-        if action != "hold" and self._cycle_locked(status, requested_power, requested_mode):
+        if self._cycle_locked(status, requested_power, requested_mode):
             return ControlDecision(
                 target_c=target,
                 measured_c=measured,

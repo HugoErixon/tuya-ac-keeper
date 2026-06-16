@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import math
 import random
-import threading
 import time
 import urllib.request
 from abc import ABC, abstractmethod
@@ -75,17 +74,16 @@ class TinyTuyaSensorReader(SensorReader):
 
 
 class _MqttSensorHub:
-    """En delad MQTT-anslutning per broker som cachar senaste payload per topic.
-    MQTT är push-baserat men sensor-läsningen är pull-baserad — hubben överbryggar."""
+    """En MQTT-anslutning som prenumererar på en FAST lista topics (känd före
+    anslutning) och cachar senaste payload per topic. Topics prenumereras i
+    on_connect — samma beprövade mönster som fungerar i andra lyssnare. MQTT är
+    push-baserat men sensor-läsningen är pull-baserad; cachen överbryggar."""
 
-    _instances: dict[tuple[str, int], "_MqttSensorHub"] = {}
-    _lock = threading.Lock()
-
-    def __init__(self, host: str, port: int):
+    def __init__(self, host: str, port: int, topics: list[str]):
         import paho.mqtt.client as mqtt
 
         self._latest: dict[str, Any] = {}
-        self._topics: set[str] = set()
+        self._topics = list(topics)
         try:
             self._client = mqtt.Client(mqtt.CALLBACK_API_VERSION.VERSION2)
         except (AttributeError, TypeError):
@@ -94,22 +92,6 @@ class _MqttSensorHub:
         self._client.on_message = self._on_message
         self._client.connect(host, port, 60)
         self._client.loop_start()
-
-    @classmethod
-    def get(cls, host: str, port: int) -> "_MqttSensorHub":
-        with cls._lock:
-            hub = cls._instances.get((host, port))
-            if hub is None:
-                hub = cls(host, port)
-                cls._instances[(host, port)] = hub
-            return hub
-
-    def subscribe(self, topic: str) -> None:
-        self._topics.add(topic)
-        try:
-            self._client.subscribe(topic)
-        except Exception:
-            pass
 
     def _on_connect(self, client, userdata, flags, *args) -> None:
         for topic in self._topics:
@@ -129,12 +111,9 @@ class MqttSensorReader(SensorReader):
     """Läser temperatur från en MQTT-topic (t.ex. Zigbee2MQTT). Payloaden tolkas som
     JSON och temperaturen plockas via value_path (default 'temperature')."""
 
-    def __init__(self, config: SensorConfig):
-        if not config.topic:
-            raise ValueError(f"Sensor {config.name} is missing topic")
+    def __init__(self, config: SensorConfig, hub: _MqttSensorHub):
         self.config = config
-        self._hub = _MqttSensorHub.get(config.mqtt_host, config.mqtt_port)
-        self._hub.subscribe(config.topic)
+        self._hub = hub
 
     def read(self) -> TemperatureReading:
         payload = self._hub.latest(self.config.topic)
@@ -149,6 +128,19 @@ class MqttSensorReader(SensorReader):
 
 
 def build_sensor_readers(configs: list[SensorConfig]) -> list[SensorReader]:
+    # Skapa EN gemensam MQTT-hub med alla mqtt-topics kända i förväg (race-fritt).
+    mqtt_configs = [c for c in configs if c.provider.lower() == "mqtt"]
+    mqtt_hub: _MqttSensorHub | None = None
+    if mqtt_configs:
+        for c in mqtt_configs:
+            if not c.topic:
+                raise ValueError(f"Sensor {c.name} is missing topic")
+        mqtt_hub = _MqttSensorHub(
+            mqtt_configs[0].mqtt_host,
+            mqtt_configs[0].mqtt_port,
+            [c.topic for c in mqtt_configs],
+        )
+
     readers: list[SensorReader] = []
     for config in configs:
         provider = config.provider.lower()
@@ -159,7 +151,7 @@ def build_sensor_readers(configs: list[SensorConfig]) -> list[SensorReader]:
         elif provider == "tinytuya":
             readers.append(TinyTuyaSensorReader(config))
         elif provider == "mqtt":
-            readers.append(MqttSensorReader(config))
+            readers.append(MqttSensorReader(config, mqtt_hub))
         else:
             raise ValueError(f"Unknown sensor provider {config.provider!r} for {config.name}")
     return readers

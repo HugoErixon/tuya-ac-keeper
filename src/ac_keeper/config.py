@@ -73,6 +73,9 @@ class SensorConfig:
     scale: float = 1.0
     offset_c: float = 0.0
     weight: float = 1.0
+    topic: str = ""
+    mqtt_host: str = "localhost"
+    mqtt_port: int = 1883
 
 
 @dataclass(frozen=True)

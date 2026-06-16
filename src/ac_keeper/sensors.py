@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import threading
 import time
 import urllib.request
 from abc import ABC, abstractmethod
@@ -73,6 +74,80 @@ class TinyTuyaSensorReader(SensorReader):
         )
 
 
+class _MqttSensorHub:
+    """En delad MQTT-anslutning per broker som cachar senaste payload per topic.
+    MQTT är push-baserat men sensor-läsningen är pull-baserad — hubben överbryggar."""
+
+    _instances: dict[tuple[str, int], "_MqttSensorHub"] = {}
+    _lock = threading.Lock()
+
+    def __init__(self, host: str, port: int):
+        import paho.mqtt.client as mqtt
+
+        self._latest: dict[str, Any] = {}
+        self._topics: set[str] = set()
+        try:
+            self._client = mqtt.Client(mqtt.CALLBACK_API_VERSION.VERSION2)
+        except (AttributeError, TypeError):
+            self._client = mqtt.Client()
+        self._client.on_connect = self._on_connect
+        self._client.on_message = self._on_message
+        self._client.connect(host, port, 60)
+        self._client.loop_start()
+
+    @classmethod
+    def get(cls, host: str, port: int) -> "_MqttSensorHub":
+        with cls._lock:
+            hub = cls._instances.get((host, port))
+            if hub is None:
+                hub = cls(host, port)
+                cls._instances[(host, port)] = hub
+            return hub
+
+    def subscribe(self, topic: str) -> None:
+        self._topics.add(topic)
+        try:
+            self._client.subscribe(topic)
+        except Exception:
+            pass
+
+    def _on_connect(self, client, userdata, flags, *args) -> None:
+        for topic in self._topics:
+            client.subscribe(topic)
+
+    def _on_message(self, client, userdata, msg) -> None:
+        try:
+            self._latest[msg.topic] = json.loads(msg.payload.decode("utf-8"))
+        except Exception:
+            pass
+
+    def latest(self, topic: str) -> Any:
+        return self._latest.get(topic)
+
+
+class MqttSensorReader(SensorReader):
+    """Läser temperatur från en MQTT-topic (t.ex. Zigbee2MQTT). Payloaden tolkas som
+    JSON och temperaturen plockas via value_path (default 'temperature')."""
+
+    def __init__(self, config: SensorConfig):
+        if not config.topic:
+            raise ValueError(f"Sensor {config.name} is missing topic")
+        self.config = config
+        self._hub = _MqttSensorHub.get(config.mqtt_host, config.mqtt_port)
+        self._hub.subscribe(config.topic)
+
+    def read(self) -> TemperatureReading:
+        payload = self._hub.latest(self.config.topic)
+        if payload is None:
+            raise RuntimeError(f"No MQTT data yet for topic {self.config.topic}")
+        raw_value = _resolve_path(payload, self.config.value_path)
+        return TemperatureReading(
+            sensor_name=self.config.name,
+            temperature_c=_to_temperature(raw_value, self.config.scale, self.config.offset_c),
+            raw={"provider": "mqtt", "topic": self.config.topic, "value": raw_value},
+        )
+
+
 def build_sensor_readers(configs: list[SensorConfig]) -> list[SensorReader]:
     readers: list[SensorReader] = []
     for config in configs:
@@ -83,6 +158,8 @@ def build_sensor_readers(configs: list[SensorConfig]) -> list[SensorReader]:
             readers.append(HttpJsonSensorReader(config))
         elif provider == "tinytuya":
             readers.append(TinyTuyaSensorReader(config))
+        elif provider == "mqtt":
+            readers.append(MqttSensorReader(config))
         else:
             raise ValueError(f"Unknown sensor provider {config.provider!r} for {config.name}")
     return readers

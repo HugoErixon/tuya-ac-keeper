@@ -13,6 +13,7 @@ dependencies = [
   "uvicorn>=0.30",
   "PyYAML>=6.0",
   "tinytuya>=1.16",
+  "paho-mqtt>=2.0",
 ]
 
 [project.optional-dependencies]

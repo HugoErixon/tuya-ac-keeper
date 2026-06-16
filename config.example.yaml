@@ -1,0 +1,63 @@
+database:
+  path: data/ac_keeper.sqlite
+
+api:
+  host: 127.0.0.1
+  port: 8089
+
+controller:
+  target_c: 21.5
+  hysteresis_c: 0.4
+  poll_seconds: 30
+  min_cycle_seconds: 180
+  aggregate: average
+  heat_enabled: false
+  dry_run: true
+
+ac:
+  provider: simulated
+  name: bedroom_ac
+  device_id: ""
+  address: ""
+  local_key: ""
+  version: "3.3"
+  temperature_scale: 1.0
+  dps:
+    power: "1"
+    mode: "2"
+    target_temperature: "3"
+    current_temperature: "4"
+  modes:
+    cool: cold
+    heat: hot
+    auto: auto
+    fan: wind
+
+sensors:
+  - name: room_simulated
+    provider: simulated
+    weight: 1.0
+    offset_c: 0.0
+
+  # Example for a Tuya temperature sensor.
+  # - name: desk_sensor
+  #   provider: tinytuya
+  #   device_id: "bf..."
+  #   address: "192.168.1.42"
+  #   local_key: "..."
+  #   version: "3.3"
+  #   temp_dp: "1"
+  #   scale: 0.1
+  #   offset_c: 0.0
+  #   weight: 1.0
+
+  # Example for any HTTP JSON temperature source.
+  # - name: home_assistant_room
+  #   provider: http_json
+  #   url: "http://homeassistant.local:8123/api/states/sensor.room_temperature"
+  #   value_path: "state"
+  #   headers:
+  #     Authorization: "Bearer REPLACE_ME"
+  #   scale: 1.0
+  #   offset_c: 0.0
+  #   weight: 1.0

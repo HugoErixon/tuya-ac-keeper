@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tuya-ac-keeper"
+version = "0.1.0"
+description = "External-sensor thermostat loop for Tuya-controlled AC units with SQLite logging and dashboard API."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "PyYAML>=6.0",
+  "tinytuya>=1.16",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+ac-keeper = "ac_keeper.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

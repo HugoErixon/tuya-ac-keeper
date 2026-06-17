@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import statistics
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from .config import AppConfig, SensorConfig
@@ -36,7 +37,17 @@ class ThermostatController:
         self.store.insert_ac_status(status)
 
         decision = self.decide(readings, status)
-        self.apply(decision, status)
+        if self._control_enabled():
+            self.apply(decision, status)
+        elif decision.measured_c is not None:
+            # Styrning avstängd via dashboarden — logga ändå temperaturen, men
+            # kommendera inte AC:n.
+            decision = replace(
+                decision,
+                action="disabled",
+                reason="AC control disabled from dashboard — logging only.",
+                requested_power=None, requested_mode=None, requested_setpoint_c=None,
+            )
         self.store.insert_control_event(decision)
 
         logger.info(
@@ -145,6 +156,17 @@ class ThermostatController:
 
         self.ac.apply(power=power, mode=mode, setpoint_c=setpoint)
         self._last_applied_at = datetime.now(timezone.utc)
+
+    def _control_enabled(self) -> bool:
+        """Läser flagg-filen (skrivs av dashboardens toggle). Saknas den → styrning på.
+        Loopen loggar ALLTID; flaggan styr bara om AC:n faktiskt kommenderas."""
+        flag_path = self.config.database.path.parent / "control_enabled"
+        try:
+            return flag_path.read_text().strip().lower() not in ("0", "false", "off", "no", "")
+        except FileNotFoundError:
+            return True
+        except Exception:
+            return True
 
     def run_forever(self) -> None:
         while True:

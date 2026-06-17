@@ -148,7 +148,12 @@ class ThermostatController:
 
     def run_forever(self) -> None:
         while True:
-            self.run_once()
+            try:
+                self.run_once()
+            except Exception:
+                # Tillfälligt fel (t.ex. onåbar AC eller sensor) får ALDRIG döda
+                # loopen — logga och fortsätt till nästa cykel.
+                logger.exception("control cycle failed; continuing")
             time.sleep(self.config.controller.poll_seconds)
 
     def _cycle_locked(self, status: AcStatus, requested_power: bool | None, requested_mode: str | None) -> bool:

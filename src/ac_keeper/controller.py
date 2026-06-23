@@ -36,6 +36,8 @@ class ThermostatController:
         self._sleep_schedule_cached_at = 0.0
         self._outdoor_temp_cache: float | None = None
         self._outdoor_temp_cached_at = 0.0
+        self._cooling_rate_cache: tuple[float, int] | None = None
+        self._cooling_rate_cached_at = 0.0
 
     def run_once(self) -> ControlDecision:
         readings = self.read_sensors()
@@ -224,7 +226,8 @@ class ThermostatController:
         outdoor_c = self._outdoor_temperature()
         heat_pressure = max(0.0, (outdoor_c or target_c) - target_c) * cfg.outside_heat_factor
         cooling_need_c = max(0.0, measured_c - target_c) + heat_pressure + cfg.sleeper_heat_buffer_c
-        rate_c_per_min = max(0.01, cfg.cooling_rate_c_per_hour / 60.0)
+        rate_c_per_hour, rate_samples = self._cooling_rate_c_per_hour()
+        rate_c_per_min = max(0.01, rate_c_per_hour / 60.0)
         lead_minutes = max(float(cfg.min_lead_minutes), cooling_need_c / rate_c_per_min)
         start_at = bedtime - timedelta(minutes=lead_minutes)
 
@@ -235,8 +238,36 @@ class ThermostatController:
         return (
             f"Pre-cool waits until {start_at.strftime('%H:%M')} for bedtime {bedtime.strftime('%H:%M')} "
             f"(wake {wake_time.strftime('%H:%M')}, room {measured_c:.2f}C, target {target_c:.1f}C"
-            f"{outdoor_label}, estimated lead {lead_minutes:.0f} min)."
+            f"{outdoor_label}, cooling rate {rate_c_per_hour:.2f}C/h from {rate_samples} samples, "
+            f"estimated lead {lead_minutes:.0f} min)."
         )
+
+    def _cooling_rate_c_per_hour(self) -> tuple[float, int]:
+        cfg = self.config.pre_cool
+        fallback = max(0.1, cfg.cooling_rate_c_per_hour)
+        if not cfg.calibrate_cooling_rate:
+            return fallback, 0
+
+        now_mono = time.monotonic()
+        if (
+            self._cooling_rate_cache is not None
+            and now_mono - self._cooling_rate_cached_at < cfg.calibration_refresh_seconds
+        ):
+            return self._cooling_rate_cache
+
+        try:
+            samples = self.store.cooling_rate_samples(hours=cfg.calibration_history_hours)
+            rates = [sample["rate_c_per_hour"] for sample in samples]
+            if len(rates) >= cfg.calibration_min_samples:
+                rate = float(statistics.median(rates))
+                self._cooling_rate_cache = (rate, len(rates))
+            else:
+                self._cooling_rate_cache = (fallback, len(rates))
+            self._cooling_rate_cached_at = now_mono
+            return self._cooling_rate_cache
+        except Exception:
+            logger.exception("cooling-rate calibration unavailable")
+            return self._cooling_rate_cache or (fallback, 0)
 
     def _sleep_schedule(self) -> tuple[datetime, datetime] | None:
         cfg = self.config.pre_cool

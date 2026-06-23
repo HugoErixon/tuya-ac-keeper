@@ -37,6 +37,10 @@ class PreCoolConfig:
     dashboard_url: str = "http://127.0.0.1:3000"
     timezone: str = "Europe/Stockholm"
     cooling_rate_c_per_hour: float = 1.2
+    calibrate_cooling_rate: bool = True
+    calibration_history_hours: float = 336.0
+    calibration_min_samples: int = 2
+    calibration_refresh_seconds: int = 1800
     outside_heat_factor: float = 0.10
     sleeper_heat_buffer_c: float = 0.5
     min_lead_minutes: int = 10

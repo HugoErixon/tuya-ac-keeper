@@ -19,6 +19,10 @@ pre_cool:
   dashboard_url: http://127.0.0.1:3000
   timezone: Europe/Stockholm
   cooling_rate_c_per_hour: 1.2
+  calibrate_cooling_rate: true
+  calibration_history_hours: 336
+  calibration_min_samples: 2
+  calibration_refresh_seconds: 1800
   outside_heat_factor: 0.10
   sleeper_heat_buffer_c: 0.5
   min_lead_minutes: 10

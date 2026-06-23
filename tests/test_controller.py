@@ -4,7 +4,7 @@ import sys
 import tempfile
 import time
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from ac_keeper.config import AppConfig, ControllerConfig, PreCoolConfig, SensorConfig
 from ac_keeper.controller import ThermostatController, aggregate_temperature
 from ac_keeper.db import TemperatureStore
-from ac_keeper.domain import AcStatus, TemperatureReading
+from ac_keeper.domain import AcStatus, ControlDecision, TemperatureReading
 from ac_keeper.tuya_client import SimulatedAcClient
 
 
@@ -120,6 +120,49 @@ class ControllerTests(unittest.TestCase):
 
             self.assertEqual(decision.action, "cool")
             self.assertTrue(decision.requested_power)
+
+    def test_cooling_rate_uses_historical_median(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = AppConfig(
+                pre_cool=PreCoolConfig(
+                    enabled=True,
+                    cooling_rate_c_per_hour=1.2,
+                    calibration_min_samples=2,
+                    calibration_refresh_seconds=1800,
+                )
+            )
+            store = TemperatureStore(Path(tmp) / "db.sqlite")
+            base = datetime.now(timezone.utc) - timedelta(hours=4)
+            for start, end, minutes in [(22.0, 21.0, 60), (22.0, 20.0, 60), (22.0, 20.5, 60)]:
+                store.insert_control_event(ControlDecision(
+                    target_c=18.0,
+                    measured_c=start,
+                    action="cool",
+                    reason="test",
+                    requested_power=True,
+                    created_at=base,
+                ))
+                store.insert_control_event(ControlDecision(
+                    target_c=18.0,
+                    measured_c=end,
+                    action="cool",
+                    reason="test",
+                    requested_power=True,
+                    created_at=base + timedelta(minutes=minutes),
+                ))
+                store.insert_control_event(ControlDecision(
+                    target_c=18.0,
+                    measured_c=end,
+                    action="off",
+                    reason="test",
+                    requested_power=False,
+                    created_at=base + timedelta(minutes=minutes + 1),
+                ))
+                base += timedelta(hours=2)
+
+            controller = ThermostatController(config, store, sensors=[], ac=SimulatedAcClient(config.ac))
+
+            self.assertEqual(controller._cooling_rate_c_per_hour(), (1.5, 3))
 
 
 if __name__ == "__main__":

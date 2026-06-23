@@ -200,6 +200,65 @@ class TemperatureStore:
             ).fetchall()
         return [_row_to_dict(row) for row in rows]
 
+    def cooling_rate_samples(
+        self,
+        hours: float = 336.0,
+        min_duration_minutes: float = 10.0,
+        max_duration_minutes: float = 360.0,
+        min_drop_c: float = 0.2,
+    ) -> list[dict[str, Any]]:
+        events = self.control_events(hours=hours)
+        samples: list[dict[str, Any]] = []
+        run_start: dict[str, Any] | None = None
+        last_cooling: dict[str, Any] | None = None
+
+        def is_cooling(row: dict[str, Any]) -> bool:
+            action = str(row.get("action") or "").replace("dry_run_", "")
+            return action == "cool" or (action == "defer" and row.get("requested_power") is True)
+
+        def close_run() -> None:
+            nonlocal run_start, last_cooling
+            if not run_start or not last_cooling or run_start is last_cooling:
+                run_start = None
+                last_cooling = None
+                return
+            start_temp = run_start.get("measured_c")
+            end_temp = last_cooling.get("measured_c")
+            if start_temp is None or end_temp is None:
+                run_start = None
+                last_cooling = None
+                return
+            start_ts = _parse_ts(str(run_start["ts"]))
+            end_ts = _parse_ts(str(last_cooling["ts"]))
+            duration_minutes = (end_ts - start_ts).total_seconds() / 60.0
+            drop_c = float(start_temp) - float(end_temp)
+            if duration_minutes >= min_duration_minutes and duration_minutes <= max_duration_minutes and drop_c >= min_drop_c:
+                rate = drop_c / (duration_minutes / 60.0)
+                if 0.1 <= rate <= 6.0:
+                    samples.append({
+                        "start_ts": run_start["ts"],
+                        "end_ts": last_cooling["ts"],
+                        "start_c": float(start_temp),
+                        "end_c": float(end_temp),
+                        "drop_c": round(drop_c, 3),
+                        "duration_minutes": round(duration_minutes, 1),
+                        "rate_c_per_hour": round(rate, 3),
+                    })
+            run_start = None
+            last_cooling = None
+
+        for row in events:
+            if row.get("measured_c") is None:
+                continue
+            if is_cooling(row):
+                if run_start is None:
+                    run_start = row
+                last_cooling = row
+            else:
+                close_run()
+        close_run()
+        return samples
+
     def export_csv(self, hours: float = 24.0) -> str:
         output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=["ts", "kind", "name", "temperature_c", "action", "target_c"])
@@ -231,6 +290,13 @@ class TemperatureStore:
 
 def _since(hours: float) -> datetime:
     return datetime.now(timezone.utc) - timedelta(hours=hours)
+
+
+def _parse_ts(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _bool_to_int(value: bool | None) -> int | None:

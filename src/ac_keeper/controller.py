@@ -109,6 +109,10 @@ class ThermostatController:
         # i beslutet), med hysteres för att undvika kort cykling.
         if above > hysteresis:
             want_cool = True
+        elif cfg.keep_cool_on:
+            # Keep the unit powered in cool mode overnight; the AC can idle at
+            # target instead of the external loop turning it fully off.
+            want_cool = True
         elif above < -hysteresis:
             want_cool = False
         else:
@@ -125,8 +129,12 @@ class ThermostatController:
             requested_power = True
             requested_mode = modes.cool
             requested_setpoint = setpoint
-            action = "cool"
-            reason = f"Room {measured:.2f}C vs target {target:.1f}C -> cool, AC setpoint {setpoint:.1f}C."
+            action = "cool" if above > hysteresis else "hold_cool"
+            reason = (
+                f"Room {measured:.2f}C vs target {target:.1f}C -> cool, AC setpoint {setpoint:.1f}C."
+                if above > hysteresis
+                else f"Room {measured:.2f}C at/below target {target:.1f}C -> keep AC on at target for stable overnight temperature."
+            )
         else:
             requested_power = False
             requested_mode = None

@@ -48,6 +48,43 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(decision.action, "dry_run_cool")
             self.assertTrue(decision.requested_power)
 
+    def test_keeps_cooling_on_when_below_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = AppConfig(
+                database=AppConfig().database,
+                controller=ControllerConfig(target_c=21.0, hysteresis_c=0.3, dry_run=True, keep_cool_on=True),
+                sensors=[SensorConfig(name="room")],
+            )
+            store = TemperatureStore(Path(tmp) / "db.sqlite")
+            controller = ThermostatController(config, store, sensors=[], ac=SimulatedAcClient(config.ac))
+
+            decision = controller.decide(
+                [TemperatureReading("room", 20.4)],
+                AcStatus(power=True, mode="cold", target_temperature_c=21.0, current_temperature_c=20.6),
+            )
+
+            self.assertEqual(decision.action, "dry_run_hold_cool")
+            self.assertTrue(decision.requested_power)
+            self.assertEqual(decision.requested_setpoint_c, 21.0)
+
+    def test_can_turn_off_when_keep_cool_on_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = AppConfig(
+                database=AppConfig().database,
+                controller=ControllerConfig(target_c=21.0, hysteresis_c=0.3, dry_run=True, keep_cool_on=False),
+                sensors=[SensorConfig(name="room")],
+            )
+            store = TemperatureStore(Path(tmp) / "db.sqlite")
+            controller = ThermostatController(config, store, sensors=[], ac=SimulatedAcClient(config.ac))
+
+            decision = controller.decide(
+                [TemperatureReading("room", 20.4)],
+                AcStatus(power=True, mode="cold", target_temperature_c=21.0, current_temperature_c=20.6),
+            )
+
+            self.assertEqual(decision.action, "dry_run_off")
+            self.assertFalse(decision.requested_power)
+
     def test_no_sensor_data_holds(self) -> None:
         config = AppConfig(controller=ControllerConfig(target_c=21.0))
         with tempfile.TemporaryDirectory() as tmp:

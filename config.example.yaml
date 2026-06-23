@@ -13,6 +13,7 @@ controller:
   aggregate: average
   heat_enabled: false
   dry_run: true
+  keep_cool_on: true
 
 pre_cool:
   enabled: false

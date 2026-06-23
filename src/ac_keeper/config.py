@@ -29,6 +29,7 @@ class ControllerConfig:
     dry_run: bool = True
     min_setpoint_c: float = 16.0
     ramp_band_c: float = 2.0
+    keep_cool_on: bool = True
 
 
 @dataclass(frozen=True)

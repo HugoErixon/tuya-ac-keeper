@@ -227,7 +227,9 @@ class ThermostatController:
             return None
 
         bedtime, wake_time = schedule
-        now = datetime.now(ZoneInfo(cfg.timezone))
+        now = self._now()
+        if 0 <= cfg.overnight_hold_until_hour and now.hour < cfg.overnight_hold_until_hour:
+            return None
         if now >= bedtime:
             return None
 
@@ -321,6 +323,9 @@ class ThermostatController:
         except Exception:
             logger.exception("pre-cool weather unavailable")
             return self._outdoor_temp_cache
+
+    def _now(self) -> datetime:
+        return datetime.now(ZoneInfo(self.config.pre_cool.timezone))
 
 
 def build_controller(config: AppConfig) -> ThermostatController:

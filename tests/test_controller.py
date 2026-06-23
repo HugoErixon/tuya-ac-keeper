@@ -116,7 +116,9 @@ class ControllerTests(unittest.TestCase):
                 sensors=[],
                 ac=SimulatedAcClient(config.ac),
             )
-            now = datetime.now(ZoneInfo("Europe/Stockholm"))
+            tz = ZoneInfo("Europe/Stockholm")
+            now = datetime(2026, 6, 24, 14, 0, tzinfo=tz)
+            controller._now = lambda: now
             controller._sleep_schedule_cache = (now + timedelta(hours=4), now + timedelta(hours=12))
             controller._sleep_schedule_cached_at = time.monotonic()
             controller._outdoor_temp_cache = 20.0
@@ -144,7 +146,9 @@ class ControllerTests(unittest.TestCase):
                 sensors=[],
                 ac=SimulatedAcClient(config.ac),
             )
-            now = datetime.now(ZoneInfo("Europe/Stockholm"))
+            tz = ZoneInfo("Europe/Stockholm")
+            now = datetime(2026, 6, 24, 20, 0, tzinfo=tz)
+            controller._now = lambda: now
             controller._sleep_schedule_cache = (now + timedelta(minutes=30), now + timedelta(hours=8))
             controller._sleep_schedule_cached_at = time.monotonic()
             controller._outdoor_temp_cache = 20.0
@@ -157,6 +161,45 @@ class ControllerTests(unittest.TestCase):
 
             self.assertEqual(decision.action, "cool")
             self.assertTrue(decision.requested_power)
+
+    def test_pre_cool_does_not_stop_overnight_hold_after_midnight(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = AppConfig(
+                database=AppConfig().database,
+                controller=ControllerConfig(target_c=18.0, hysteresis_c=0.3, dry_run=False, keep_cool_on=True),
+                pre_cool=PreCoolConfig(
+                    enabled=True,
+                    cooling_rate_c_per_hour=1.2,
+                    sleeper_heat_buffer_c=0.5,
+                    overnight_hold_until_hour=10,
+                ),
+                sensors=[SensorConfig(name="room")],
+            )
+            controller = ThermostatController(
+                config,
+                TemperatureStore(Path(tmp) / "db.sqlite"),
+                sensors=[],
+                ac=SimulatedAcClient(config.ac),
+            )
+            tz = ZoneInfo("Europe/Stockholm")
+            now = datetime(2026, 6, 24, 0, 30, tzinfo=tz)
+            controller._now = lambda: now
+            controller._sleep_schedule_cache = (
+                now.replace(hour=22, minute=30),
+                now.replace(day=25, hour=7, minute=0),
+            )
+            controller._sleep_schedule_cached_at = time.monotonic()
+            controller._outdoor_temp_cache = 20.0
+            controller._outdoor_temp_cached_at = time.monotonic()
+
+            decision = controller.decide(
+                [TemperatureReading("room", 17.7)],
+                AcStatus(power=True, mode="cold", target_temperature_c=18.0, current_temperature_c=18.0),
+            )
+
+            self.assertEqual(decision.action, "hold_cool")
+            self.assertTrue(decision.requested_power)
+            self.assertEqual(decision.requested_setpoint_c, 18.0)
 
     def test_cooling_rate_uses_historical_median(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

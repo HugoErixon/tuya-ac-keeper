@@ -45,6 +45,7 @@ class PreCoolConfig:
     outside_heat_factor: float = 0.10
     sleeper_heat_buffer_c: float = 0.5
     min_lead_minutes: int = 10
+    overnight_hold_until_hour: int = 10
     schedule_refresh_seconds: int = 300
     weather_refresh_seconds: int = 900
 

@@ -27,6 +27,7 @@ pre_cool:
   outside_heat_factor: 0.10
   sleeper_heat_buffer_c: 0.5
   min_lead_minutes: 10
+  overnight_hold_until_hour: 10
   schedule_refresh_seconds: 300
   weather_refresh_seconds: 900
 

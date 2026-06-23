@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import time
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ac_keeper.config import AppConfig, ControllerConfig, SensorConfig
+from ac_keeper.config import AppConfig, ControllerConfig, PreCoolConfig, SensorConfig
 from ac_keeper.controller import ThermostatController, aggregate_temperature
 from ac_keeper.db import TemperatureStore
 from ac_keeper.domain import AcStatus, TemperatureReading
@@ -61,6 +64,62 @@ class ControllerTests(unittest.TestCase):
             )
 
             self.assertEqual(decision.action, "no_sensor_data")
+
+    def test_pre_cool_waits_before_calculated_start(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = AppConfig(
+                database=AppConfig().database,
+                controller=ControllerConfig(target_c=18.0, hysteresis_c=0.3, dry_run=False),
+                pre_cool=PreCoolConfig(enabled=True, cooling_rate_c_per_hour=1.2, sleeper_heat_buffer_c=0.5),
+                sensors=[SensorConfig(name="room")],
+            )
+            controller = ThermostatController(
+                config,
+                TemperatureStore(Path(tmp) / "db.sqlite"),
+                sensors=[],
+                ac=SimulatedAcClient(config.ac),
+            )
+            now = datetime.now(ZoneInfo("Europe/Stockholm"))
+            controller._sleep_schedule_cache = (now + timedelta(hours=4), now + timedelta(hours=12))
+            controller._sleep_schedule_cached_at = time.monotonic()
+            controller._outdoor_temp_cache = 20.0
+            controller._outdoor_temp_cached_at = time.monotonic()
+
+            decision = controller.decide(
+                [TemperatureReading("room", 20.0)],
+                AcStatus(power=False, mode="cold", target_temperature_c=18.0, current_temperature_c=20.0),
+            )
+
+            self.assertEqual(decision.action, "pre_cool_wait")
+            self.assertFalse(decision.requested_power)
+
+    def test_pre_cool_allows_cooling_after_calculated_start(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = AppConfig(
+                database=AppConfig().database,
+                controller=ControllerConfig(target_c=18.0, hysteresis_c=0.3, dry_run=False),
+                pre_cool=PreCoolConfig(enabled=True, cooling_rate_c_per_hour=1.2, sleeper_heat_buffer_c=0.5),
+                sensors=[SensorConfig(name="room")],
+            )
+            controller = ThermostatController(
+                config,
+                TemperatureStore(Path(tmp) / "db.sqlite"),
+                sensors=[],
+                ac=SimulatedAcClient(config.ac),
+            )
+            now = datetime.now(ZoneInfo("Europe/Stockholm"))
+            controller._sleep_schedule_cache = (now + timedelta(minutes=30), now + timedelta(hours=8))
+            controller._sleep_schedule_cached_at = time.monotonic()
+            controller._outdoor_temp_cache = 20.0
+            controller._outdoor_temp_cached_at = time.monotonic()
+
+            decision = controller.decide(
+                [TemperatureReading("room", 20.0)],
+                AcStatus(power=False, mode="cold", target_temperature_c=18.0, current_temperature_c=20.0),
+            )
+
+            self.assertEqual(decision.action, "cool")
+            self.assertTrue(decision.requested_power)
 
 
 if __name__ == "__main__":

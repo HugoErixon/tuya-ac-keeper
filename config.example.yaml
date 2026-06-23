@@ -14,6 +14,17 @@ controller:
   heat_enabled: false
   dry_run: true
 
+pre_cool:
+  enabled: false
+  dashboard_url: http://127.0.0.1:3000
+  timezone: Europe/Stockholm
+  cooling_rate_c_per_hour: 1.2
+  outside_heat_factor: 0.10
+  sleeper_heat_buffer_c: 0.5
+  min_lead_minutes: 10
+  schedule_refresh_seconds: 300
+  weather_refresh_seconds: 900
+
 ac:
   provider: simulated
   name: bedroom_ac

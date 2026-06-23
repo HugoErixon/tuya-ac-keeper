@@ -32,6 +32,19 @@ class ControllerConfig:
 
 
 @dataclass(frozen=True)
+class PreCoolConfig:
+    enabled: bool = False
+    dashboard_url: str = "http://127.0.0.1:3000"
+    timezone: str = "Europe/Stockholm"
+    cooling_rate_c_per_hour: float = 1.2
+    outside_heat_factor: float = 0.10
+    sleeper_heat_buffer_c: float = 0.5
+    min_lead_minutes: int = 10
+    schedule_refresh_seconds: int = 300
+    weather_refresh_seconds: int = 900
+
+
+@dataclass(frozen=True)
 class DpsConfig:
     power: str = "1"
     mode: str = "2"
@@ -85,6 +98,7 @@ class AppConfig:
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     api: ApiConfig = field(default_factory=ApiConfig)
     controller: ControllerConfig = field(default_factory=ControllerConfig)
+    pre_cool: PreCoolConfig = field(default_factory=PreCoolConfig)
     ac: AcDeviceConfig = field(default_factory=AcDeviceConfig)
     sensors: list[SensorConfig] = field(default_factory=lambda: [SensorConfig(name="room_simulated")])
 
@@ -102,6 +116,7 @@ def app_config_from_mapping(raw: dict[str, Any], base_dir: Path | None = None) -
     database_raw = raw.get("database", {})
     api_raw = raw.get("api", {})
     controller_raw = raw.get("controller", {})
+    pre_cool_raw = raw.get("pre_cool", {})
     ac_raw = raw.get("ac", {})
 
     db_path = Path(database_raw.get("path", "data/ac_keeper.sqlite"))
@@ -118,6 +133,7 @@ def app_config_from_mapping(raw: dict[str, Any], base_dir: Path | None = None) -
         database=DatabaseConfig(path=db_path),
         api=ApiConfig(**{**ApiConfig().__dict__, **api_raw}),
         controller=ControllerConfig(**{**ControllerConfig().__dict__, **controller_raw}),
+        pre_cool=PreCoolConfig(**{**PreCoolConfig().__dict__, **pre_cool_raw}),
         ac=AcDeviceConfig(
             **{**AcDeviceConfig(dps=dps, modes=modes).__dict__, **ac_values, "dps": dps, "modes": modes}
         ),

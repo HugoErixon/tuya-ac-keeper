@@ -3,8 +3,12 @@ from __future__ import annotations
 import logging
 import statistics
 import time
+import json
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import date, datetime, time as dt_time, timedelta, timezone
+from typing import Any
+from urllib.request import urlopen
+from zoneinfo import ZoneInfo
 
 from .config import AppConfig, SensorConfig
 from .db import TemperatureStore
@@ -28,6 +32,10 @@ class ThermostatController:
         self.sensors = sensors
         self.ac = ac
         self._last_applied_at: datetime | None = None
+        self._sleep_schedule_cache: tuple[datetime, datetime] | None = None
+        self._sleep_schedule_cached_at = 0.0
+        self._outdoor_temp_cache: float | None = None
+        self._outdoor_temp_cached_at = 0.0
 
     def run_once(self) -> ControlDecision:
         readings = self.read_sensors()
@@ -83,6 +91,17 @@ class ThermostatController:
         hysteresis = cfg.hysteresis_c
         modes = self.config.ac.modes
         above = measured - target
+        pre_cool_reason = self._pre_cool_reason(measured, target)
+        if pre_cool_reason is not None:
+            return ControlDecision(
+                target_c=target,
+                measured_c=measured,
+                action="pre_cool_wait" if not cfg.dry_run else "dry_run_pre_cool_wait",
+                reason=pre_cool_reason,
+                requested_power=False,
+                requested_mode=None,
+                requested_setpoint_c=None,
+            )
 
         # På/av styrs HELT av Zigbee-mätningen (AC:ns egen givare används aldrig
         # i beslutet), med hysteres för att undvika kort cykling.
@@ -188,6 +207,82 @@ class ThermostatController:
         elapsed = (datetime.now(timezone.utc) - self._last_applied_at).total_seconds()
         return elapsed < self.config.controller.min_cycle_seconds
 
+    def _pre_cool_reason(self, measured_c: float, target_c: float) -> str | None:
+        cfg = self.config.pre_cool
+        if not cfg.enabled:
+            return None
+
+        schedule = self._sleep_schedule()
+        if schedule is None:
+            return None
+
+        bedtime, wake_time = schedule
+        now = datetime.now(ZoneInfo(cfg.timezone))
+        if now >= bedtime:
+            return None
+
+        outdoor_c = self._outdoor_temperature()
+        heat_pressure = max(0.0, (outdoor_c or target_c) - target_c) * cfg.outside_heat_factor
+        cooling_need_c = max(0.0, measured_c - target_c) + heat_pressure + cfg.sleeper_heat_buffer_c
+        rate_c_per_min = max(0.01, cfg.cooling_rate_c_per_hour / 60.0)
+        lead_minutes = max(float(cfg.min_lead_minutes), cooling_need_c / rate_c_per_min)
+        start_at = bedtime - timedelta(minutes=lead_minutes)
+
+        if now >= start_at:
+            return None
+
+        outdoor_label = f", outside {outdoor_c:.1f}C" if outdoor_c is not None else ""
+        return (
+            f"Pre-cool waits until {start_at.strftime('%H:%M')} for bedtime {bedtime.strftime('%H:%M')} "
+            f"(wake {wake_time.strftime('%H:%M')}, room {measured_c:.2f}C, target {target_c:.1f}C"
+            f"{outdoor_label}, estimated lead {lead_minutes:.0f} min)."
+        )
+
+    def _sleep_schedule(self) -> tuple[datetime, datetime] | None:
+        cfg = self.config.pre_cool
+        now_mono = time.monotonic()
+        if (
+            self._sleep_schedule_cache is not None
+            and now_mono - self._sleep_schedule_cached_at < cfg.schedule_refresh_seconds
+        ):
+            return self._sleep_schedule_cache
+
+        try:
+            data = _http_json(f"{cfg.dashboard_url.rstrip('/')}/api/sleep-coach", timeout=5)
+            night = (data.get("night") or {})
+            bedtime = _sleep_clock_to_datetime(
+                wake_date=night.get("date"),
+                bedtime_clock=night.get("bedtime"),
+                wake_clock=night.get("wake"),
+                tz_name=cfg.timezone,
+            )
+            wake_time = _clock_on_date(night.get("date"), night.get("wake"), cfg.timezone)
+            self._sleep_schedule_cache = (bedtime, wake_time)
+            self._sleep_schedule_cached_at = now_mono
+            return self._sleep_schedule_cache
+        except Exception:
+            logger.exception("pre-cool schedule unavailable")
+            return self._sleep_schedule_cache
+
+    def _outdoor_temperature(self) -> float | None:
+        cfg = self.config.pre_cool
+        now_mono = time.monotonic()
+        if (
+            self._outdoor_temp_cache is not None
+            and now_mono - self._outdoor_temp_cached_at < cfg.weather_refresh_seconds
+        ):
+            return self._outdoor_temp_cache
+
+        try:
+            data = _http_json(f"{cfg.dashboard_url.rstrip('/')}/api/weather/current", timeout=5)
+            temp = data.get("temperature_c")
+            self._outdoor_temp_cache = float(temp) if temp is not None else None
+            self._outdoor_temp_cached_at = now_mono
+            return self._outdoor_temp_cache
+        except Exception:
+            logger.exception("pre-cool weather unavailable")
+            return self._outdoor_temp_cache
+
 
 def build_controller(config: AppConfig) -> ThermostatController:
     store = TemperatureStore(config.database.path)
@@ -221,3 +316,35 @@ def aggregate_temperature(
     if total_weight <= 0:
         return None
     return round(weighted_sum / total_weight, 2)
+
+
+def _http_json(url: str, timeout: float) -> dict[str, Any]:
+    with urlopen(url, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _sleep_clock_to_datetime(
+    wake_date: str | None,
+    bedtime_clock: str | None,
+    wake_clock: str | None,
+    tz_name: str,
+) -> datetime:
+    if not wake_date or not bedtime_clock or not wake_clock:
+        raise ValueError("sleep schedule is missing date, bedtime, or wake")
+    wake_day = date.fromisoformat(wake_date)
+    bed_minutes = _clock_minutes(bedtime_clock)
+    wake_minutes = _clock_minutes(wake_clock)
+    bed_day = wake_day - timedelta(days=1) if bed_minutes > wake_minutes else wake_day
+    return _clock_on_date(bed_day.isoformat(), bedtime_clock, tz_name)
+
+
+def _clock_on_date(day: str | None, clock: str | None, tz_name: str) -> datetime:
+    if not day or not clock:
+        raise ValueError("date and clock are required")
+    hour, minute = [int(part) for part in clock.split(":", 1)]
+    return datetime.combine(date.fromisoformat(day), dt_time(hour, minute), ZoneInfo(tz_name))
+
+
+def _clock_minutes(clock: str) -> int:
+    hour, minute = [int(part) for part in clock.split(":", 1)]
+    return hour * 60 + minute

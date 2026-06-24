@@ -46,6 +46,33 @@ class ThermostatController:
         status = self.ac.status()
         self.store.insert_ac_status(status)
 
+        if self._water_lockout():
+            # Vattendunken (kondens) är full — översvämningsskydd. Tvinga AC:n AV
+            # varje cykel tills låset släpps manuellt från dashboarden. Detta går
+            # FÖRE all vanlig reglering och struntar i min_cycle/keep_cool_on.
+            measured = aggregate_temperature(
+                readings, self.config.sensors, self.config.controller.aggregate
+            )
+            dry = self.config.controller.dry_run
+            decision = ControlDecision(
+                target_c=self.config.controller.target_c,
+                measured_c=measured,
+                action="dry_run_water_lockout" if dry else "water_lockout",
+                reason="Water tank full — forcing AC off to prevent overflow.",
+                requested_power=False,
+                requested_mode=None,
+                requested_setpoint_c=None,
+            )
+            if status.power and not dry:
+                try:
+                    self.ac.apply(power=False, mode=None, setpoint_c=None)
+                    self._last_applied_at = datetime.now(timezone.utc)
+                except Exception:
+                    logger.exception("water lockout: failed to power off AC")
+            self.store.insert_control_event(decision)
+            logger.warning("WATER LOCKOUT active — AC forced off (tank full).")
+            return decision
+
         decision = self.decide(readings, status)
         if self._control_enabled():
             self.apply(decision, status)
@@ -196,6 +223,17 @@ class ThermostatController:
             return True
         except Exception:
             return True
+
+    def _water_lockout(self) -> bool:
+        """Är vattendunken full? Flagg-filen skrivs av dashboardens /api/water.
+        Finns + sann → tvinga AC av. Saknas → inget lås (felsäkert default)."""
+        flag_path = self.config.database.path.parent / "water_lockout"
+        try:
+            return flag_path.read_text().strip().lower() not in ("0", "false", "off", "no", "")
+        except FileNotFoundError:
+            return False
+        except Exception:
+            return False
 
     def run_forever(self) -> None:
         while True:

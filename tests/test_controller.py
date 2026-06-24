@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ac_keeper.config import AppConfig, ControllerConfig, PreCoolConfig, SensorConfig
+from ac_keeper.config import AppConfig, ControllerConfig, DatabaseConfig, PreCoolConfig, SensorConfig
 from ac_keeper.controller import ThermostatController, aggregate_temperature
 from ac_keeper.db import TemperatureStore
 from ac_keeper.domain import AcStatus, ControlDecision, TemperatureReading
@@ -84,6 +84,42 @@ class ControllerTests(unittest.TestCase):
 
             self.assertEqual(decision.action, "dry_run_off")
             self.assertFalse(decision.requested_power)
+
+    def test_water_lockout_forces_ac_off(self) -> None:
+        # Översvämningsskydd: när water_lockout-flaggan finns ska run_once tvinga
+        # AC:n AV även i värsta fall (keep_cool_on=True, AC:n redan på).
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "db.sqlite"
+            config = AppConfig(
+                database=DatabaseConfig(path=db_path),
+                controller=ControllerConfig(target_c=21.0, dry_run=False, keep_cool_on=True),
+                sensors=[SensorConfig(name="room")],
+            )
+            store = TemperatureStore(db_path)
+            ac = SimulatedAcClient(config.ac)
+            ac.apply(power=True, mode="cold", setpoint_c=21.0)  # AC:n kyler just nu
+            controller = ThermostatController(config, store, sensors=[], ac=ac)
+
+            (db_path.parent / "water_lockout").write_text("1")
+            decision = controller.run_once()
+
+            self.assertEqual(decision.action, "water_lockout")
+            self.assertFalse(decision.requested_power)
+            self.assertFalse(ac.status().power)  # AC:n är nu faktiskt avstängd
+
+    def test_no_water_lockout_when_flag_absent(self) -> None:
+        # Utan flagga ska normal reglering gälla (felsäkert default = inget lås).
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "db.sqlite"
+            config = AppConfig(
+                database=DatabaseConfig(path=db_path),
+                controller=ControllerConfig(target_c=21.0, dry_run=True),
+                sensors=[SensorConfig(name="room")],
+            )
+            controller = ThermostatController(
+                config, TemperatureStore(db_path), sensors=[], ac=SimulatedAcClient(config.ac)
+            )
+            self.assertFalse(controller._water_lockout())
 
     def test_no_sensor_data_holds(self) -> None:
         config = AppConfig(controller=ControllerConfig(target_c=21.0))

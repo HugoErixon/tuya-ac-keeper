@@ -198,8 +198,11 @@ def _to_humidity(raw_value: Any, scale: float, offset: float) -> float:
 def _read_humidity_path(payload: Any, config: SensorConfig) -> float | None:
     if not config.humidity_path:
         return None
-    raw_value = _resolve_path(payload, config.humidity_path)
-    return _to_humidity(raw_value, config.humidity_scale, config.humidity_offset)
+    try:
+        raw_value = _resolve_path(payload, config.humidity_path)
+        return _to_humidity(raw_value, config.humidity_scale, config.humidity_offset)
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _read_humidity_dp(dps: dict[str, Any], config: SensorConfig) -> float | None:

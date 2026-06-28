@@ -17,6 +17,7 @@ def iso_now() -> str:
 class TemperatureReading:
     sensor_name: str
     temperature_c: float
+    humidity_pct: float | None = None
     observed_at: datetime = field(default_factory=utc_now)
     raw: dict[str, Any] = field(default_factory=dict)
 

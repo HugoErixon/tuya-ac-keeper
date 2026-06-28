@@ -40,6 +40,7 @@ class TemperatureStore:
                     ts TEXT NOT NULL,
                     sensor_name TEXT NOT NULL,
                     temperature_c REAL NOT NULL,
+                    humidity_pct REAL,
                     raw_json TEXT NOT NULL DEFAULT '{}'
                 );
                 CREATE INDEX IF NOT EXISTS idx_sensor_readings_ts
@@ -74,6 +75,9 @@ class TemperatureStore:
                     ON control_events(ts);
                 """
             )
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(sensor_readings)").fetchall()}
+            if "humidity_pct" not in columns:
+                conn.execute("ALTER TABLE sensor_readings ADD COLUMN humidity_pct REAL")
 
     def insert_sensor_readings(self, readings: list[TemperatureReading]) -> None:
         if not readings:
@@ -81,14 +85,15 @@ class TemperatureStore:
         with self._connect() as conn:
             conn.executemany(
                 """
-                INSERT INTO sensor_readings (ts, sensor_name, temperature_c, raw_json)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO sensor_readings (ts, sensor_name, temperature_c, humidity_pct, raw_json)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         reading.observed_at.isoformat(),
                         reading.sensor_name,
                         reading.temperature_c,
+                        reading.humidity_pct,
                         json.dumps(reading.raw, sort_keys=True),
                     )
                     for reading in readings
@@ -177,7 +182,7 @@ class TemperatureStore:
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT ts, sensor_name, temperature_c
+                SELECT ts, sensor_name, temperature_c, humidity_pct
                 FROM sensor_readings
                 {where}
                 ORDER BY ts ASC
@@ -261,7 +266,7 @@ class TemperatureStore:
 
     def export_csv(self, hours: float = 24.0) -> str:
         output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=["ts", "kind", "name", "temperature_c", "action", "target_c"])
+        writer = csv.DictWriter(output, fieldnames=["ts", "kind", "name", "temperature_c", "humidity_pct", "action", "target_c"])
         writer.writeheader()
         for row in self.sensor_series(hours=hours):
             writer.writerow(
@@ -270,6 +275,7 @@ class TemperatureStore:
                     "kind": "sensor",
                     "name": row["sensor_name"],
                     "temperature_c": row["temperature_c"],
+                    "humidity_pct": row["humidity_pct"],
                     "action": "",
                     "target_c": "",
                 }
@@ -281,6 +287,7 @@ class TemperatureStore:
                     "kind": "control",
                     "name": "",
                     "temperature_c": row["measured_c"],
+                    "humidity_pct": "",
                     "action": row["action"],
                     "target_c": row["target_c"],
                 }

@@ -88,11 +88,15 @@ class SensorConfig:
     local_key: str = ""
     version: str = "3.3"
     temp_dp: str = "1"
+    humidity_dp: str | None = None
     url: str = ""
     value_path: str = "temperature"
+    humidity_path: str | None = None
     headers: dict[str, str] = field(default_factory=dict)
     scale: float = 1.0
     offset_c: float = 0.0
+    humidity_scale: float = 1.0
+    humidity_offset: float = 0.0
     weight: float = 1.0
     topic: str = ""
     mqtt_host: str = "localhost"

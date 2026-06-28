@@ -64,8 +64,10 @@ sensors:
   #   local_key: "..."
   #   version: "3.3"
   #   temp_dp: "1"
+  #   humidity_dp: "2"
   #   scale: 0.1
   #   offset_c: 0.0
+  #   humidity_scale: 1.0
   #   weight: 1.0
 
   # Example for any HTTP JSON temperature source.
@@ -73,6 +75,7 @@ sensors:
   #   provider: http_json
   #   url: "http://homeassistant.local:8123/api/states/sensor.room_temperature"
   #   value_path: "state"
+  #   humidity_path: "attributes.humidity"
   #   headers:
   #     Authorization: "Bearer REPLACE_ME"
   #   scale: 1.0

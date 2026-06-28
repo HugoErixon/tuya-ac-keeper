@@ -30,6 +30,7 @@ class SimulatedSensorReader(SensorReader):
         return TemperatureReading(
             sensor_name=self.config.name,
             temperature_c=round(value, 2),
+            humidity_pct=round(45.0 + math.sin(time.time() / 240.0 + self._phase) * 3.0, 1),
             raw={"provider": "simulated"},
         )
 
@@ -46,10 +47,12 @@ class HttpJsonSensorReader(SensorReader):
             payload = json.loads(response.read().decode("utf-8"))
         raw_value = _resolve_path(payload, self.config.value_path)
         temperature = _to_temperature(raw_value, self.config.scale, self.config.offset_c)
+        humidity = _read_humidity_path(payload, self.config)
         return TemperatureReading(
             sensor_name=self.config.name,
             temperature_c=temperature,
-            raw={"provider": "http_json", "value": raw_value},
+            humidity_pct=humidity,
+            raw={"provider": "http_json", "value": raw_value, "humidity": humidity},
         )
 
 
@@ -66,9 +69,11 @@ class TinyTuyaSensorReader(SensorReader):
         raw_value = dps.get(str(self.config.temp_dp))
         if raw_value is None:
             raise KeyError(f"Tuya sensor {self.config.name} has no DP {self.config.temp_dp}; got {sorted(dps)}")
+        humidity = _read_humidity_dp(dps, self.config)
         return TemperatureReading(
             sensor_name=self.config.name,
             temperature_c=_to_temperature(raw_value, self.config.scale, self.config.offset_c),
+            humidity_pct=humidity,
             raw={"provider": "tinytuya", "dps": dps},
         )
 
@@ -120,10 +125,12 @@ class MqttSensorReader(SensorReader):
         if payload is None:
             raise RuntimeError(f"No MQTT data yet for topic {self.config.topic}")
         raw_value = _resolve_path(payload, self.config.value_path)
+        humidity = _read_humidity_path(payload, self.config)
         return TemperatureReading(
             sensor_name=self.config.name,
             temperature_c=_to_temperature(raw_value, self.config.scale, self.config.offset_c),
-            raw={"provider": "mqtt", "topic": self.config.topic, "value": raw_value},
+            humidity_pct=humidity,
+            raw={"provider": "mqtt", "topic": self.config.topic, "value": raw_value, "humidity": humidity},
         )
 
 
@@ -182,3 +189,23 @@ def _resolve_path(payload: Any, path: str) -> Any:
 
 def _to_temperature(raw_value: Any, scale: float, offset_c: float) -> float:
     return round(float(raw_value) * scale + offset_c, 2)
+
+
+def _to_humidity(raw_value: Any, scale: float, offset: float) -> float:
+    return round(float(raw_value) * scale + offset, 1)
+
+
+def _read_humidity_path(payload: Any, config: SensorConfig) -> float | None:
+    if not config.humidity_path:
+        return None
+    raw_value = _resolve_path(payload, config.humidity_path)
+    return _to_humidity(raw_value, config.humidity_scale, config.humidity_offset)
+
+
+def _read_humidity_dp(dps: dict[str, Any], config: SensorConfig) -> float | None:
+    if not config.humidity_dp:
+        return None
+    raw_value = dps.get(str(config.humidity_dp))
+    if raw_value is None:
+        return None
+    return _to_humidity(raw_value, config.humidity_scale, config.humidity_offset)

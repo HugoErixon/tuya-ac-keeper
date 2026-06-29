@@ -213,6 +213,61 @@ class ThermostatController:
         self.ac.apply(power=power, mode=mode, setpoint_c=setpoint)
         self._last_applied_at = datetime.now(timezone.utc)
 
+    def manual_control(self, mode: str, setpoint_c: float | None) -> ControlDecision:
+        mode = (mode or "").strip().lower()
+        allowed_modes = {"cool", "fan", "auto", "heat", "off"}
+        if mode not in allowed_modes:
+            raise ValueError("mode must be one of cool, fan, auto, heat, or off")
+        if mode != "off":
+            if setpoint_c is None:
+                raise ValueError("setpoint_c is required unless mode is off")
+            if not 10.0 <= setpoint_c <= 35.0:
+                raise ValueError("setpoint_c must be between 10 and 35")
+            setpoint_c = round(setpoint_c * 2) / 2
+
+        self._set_control_enabled(False)
+        readings = self.read_sensors()
+        self.store.insert_sensor_readings(readings)
+        status = self.ac.status()
+        self.store.insert_ac_status(status)
+        measured = aggregate_temperature(readings, self.config.sensors, self.config.controller.aggregate)
+
+        if mode == "off":
+            power = False
+            requested_mode = None
+            requested_setpoint = None
+            reason = "Manual dashboard command -> AC off; automatic control disabled."
+        else:
+            mode_map = {
+                "cool": self.config.ac.modes.cool,
+                "fan": self.config.ac.modes.fan,
+                "auto": self.config.ac.modes.auto,
+                "heat": self.config.ac.modes.heat,
+            }
+            power = True
+            requested_mode = mode_map[mode]
+            requested_setpoint = setpoint_c
+            reason = (
+                f"Manual dashboard command -> mode {mode}, AC setpoint {setpoint_c:.1f}C; "
+                "automatic control disabled."
+            )
+
+        if not self.config.controller.dry_run:
+            self.ac.apply(power=power, mode=requested_mode, setpoint_c=requested_setpoint)
+            self._last_applied_at = datetime.now(timezone.utc)
+
+        decision = ControlDecision(
+            target_c=self.config.controller.target_c,
+            measured_c=measured,
+            action=f"manual_{mode}" if not self.config.controller.dry_run else f"dry_run_manual_{mode}",
+            reason=reason,
+            requested_power=power,
+            requested_mode=requested_mode,
+            requested_setpoint_c=requested_setpoint,
+        )
+        self.store.insert_control_event(decision)
+        return decision
+
     def _control_enabled(self) -> bool:
         """Läser flagg-filen (skrivs av dashboardens toggle). Saknas den → styrning på.
         Loopen loggar ALLTID; flaggan styr bara om AC:n faktiskt kommenderas."""
@@ -223,6 +278,11 @@ class ThermostatController:
             return True
         except Exception:
             return True
+
+    def _set_control_enabled(self, enabled: bool) -> None:
+        flag_path = self.config.database.path.parent / "control_enabled"
+        flag_path.parent.mkdir(parents=True, exist_ok=True)
+        flag_path.write_text("1" if enabled else "0", encoding="utf-8")
 
     def _water_lockout(self) -> bool:
         """Är vattendunken full? Flagg-filen skrivs av dashboardens /api/water.
@@ -326,12 +386,13 @@ class ThermostatController:
         ):
             return self._sleep_schedule_cache
 
+        manual_bedtime = self._manual_bedtime_override()
         try:
             data = _http_json(f"{cfg.dashboard_url.rstrip('/')}/api/sleep-coach", timeout=5)
             night = (data.get("night") or {})
             bedtime = _sleep_clock_to_datetime(
                 wake_date=night.get("date"),
-                bedtime_clock=night.get("bedtime"),
+                bedtime_clock=manual_bedtime or night.get("bedtime"),
                 wake_clock=night.get("wake"),
                 tz_name=cfg.timezone,
             )
@@ -341,7 +402,24 @@ class ThermostatController:
             return self._sleep_schedule_cache
         except Exception:
             logger.exception("pre-cool schedule unavailable")
+            if manual_bedtime:
+                bedtime = _next_clock_datetime(manual_bedtime, cfg.timezone)
+                wake_time = bedtime + timedelta(hours=8)
+                self._sleep_schedule_cache = (bedtime, wake_time)
+                self._sleep_schedule_cached_at = now_mono
+                return self._sleep_schedule_cache
             return self._sleep_schedule_cache
+
+    def _manual_bedtime_override(self) -> str | None:
+        cfg = self.config.pre_cool
+        try:
+            data = _http_json(f"{cfg.dashboard_url.rstrip('/')}/api/ac/bedtime", timeout=5)
+            bedtime = data.get("bedtime")
+            if isinstance(bedtime, str) and _is_clock(bedtime):
+                return bedtime
+        except Exception:
+            logger.exception("manual bedtime override unavailable")
+        return None
 
     def _outdoor_temperature(self) -> float | None:
         cfg = self.config.pre_cool
@@ -430,3 +508,20 @@ def _clock_on_date(day: str | None, clock: str | None, tz_name: str) -> datetime
 def _clock_minutes(clock: str) -> int:
     hour, minute = [int(part) for part in clock.split(":", 1)]
     return hour * 60 + minute
+
+
+def _is_clock(clock: str) -> bool:
+    try:
+        hour, minute = [int(part) for part in clock.split(":", 1)]
+    except Exception:
+        return False
+    return 0 <= hour <= 23 and 0 <= minute <= 59
+
+
+def _next_clock_datetime(clock: str, tz_name: str) -> datetime:
+    hour, minute = [int(part) for part in clock.split(":", 1)]
+    now = datetime.now(ZoneInfo(tz_name))
+    candidate = datetime.combine(now.date(), dt_time(hour, minute), ZoneInfo(tz_name))
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    return candidate

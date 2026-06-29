@@ -103,7 +103,35 @@ class ThermostatController:
                 readings.append(sensor.read())
             except Exception:
                 logger.exception("sensor read failed")
+                fallback = self._fallback_sensor_reading(sensor)
+                if fallback is not None:
+                    readings.append(fallback)
         return readings
+
+    def _fallback_sensor_reading(self, sensor: SensorReader, max_age_seconds: int = 6 * 3600) -> TemperatureReading | None:
+        config = getattr(sensor, "config", None)
+        sensor_name = getattr(config, "name", None)
+        if not sensor_name:
+            return None
+        try:
+            rows = self.store.latest_sensor_readings()
+            row = next((item for item in rows if item.get("sensor_name") == sensor_name), None)
+            if not row:
+                return None
+            observed_at = datetime.fromisoformat(str(row["ts"]).replace("Z", "+00:00"))
+            if (datetime.now(timezone.utc) - observed_at).total_seconds() > max_age_seconds:
+                return None
+            logger.warning("using stored sensor fallback for %s from %s", sensor_name, observed_at.isoformat())
+            return TemperatureReading(
+                sensor_name=sensor_name,
+                temperature_c=float(row["temperature_c"]),
+                humidity_pct=float(row["humidity_pct"]) if row.get("humidity_pct") is not None else None,
+                observed_at=observed_at,
+                raw={"provider": "stored_fallback", "ts": row["ts"]},
+            )
+        except Exception:
+            logger.exception("stored sensor fallback failed")
+            return None
 
     def decide(self, readings: list[TemperatureReading], status: AcStatus) -> ControlDecision:
         measured = aggregate_temperature(readings, self.config.sensors, self.config.controller.aggregate)

@@ -126,8 +126,8 @@ class ThermostatController:
                 sensor_name=sensor_name,
                 temperature_c=float(row["temperature_c"]),
                 humidity_pct=float(row["humidity_pct"]) if row.get("humidity_pct") is not None else None,
-                observed_at=observed_at,
-                raw={"provider": "stored_fallback", "ts": row["ts"]},
+                observed_at=datetime.now(timezone.utc),
+                raw={"provider": "stored_fallback", "source_ts": row["ts"]},
             )
         except Exception:
             logger.exception("stored sensor fallback failed")
